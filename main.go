@@ -12,10 +12,44 @@ type weatherProvider interface {
 	temperature(city string) (float64, error) // in Kelvin
 }
 
+type Coord struct {
+	Lon float64
+	Lat float64
+}
 type multiWeatherProvider []weatherProvider
 type openWeatherMap struct{}
 type weatherUnderground struct {
 	apiKey string
+}
+type forecastIo struct {
+	apiKey string
+}
+
+func (w forecastIo) temperature(city string) (float64, error) {
+	return 0, nil
+}
+
+func (w openWeatherMap) coordinates(city string) (Coord, error) {
+	resp, err := http.Get("http://api.openweathermap.org/data/2.5/weather?q=" + city)
+	if err != nil {
+		return Coord{}, nil
+	}
+
+	defer resp.Body.Close()
+
+	var d struct {
+		Coord struct {
+			Lon float64 `json:"lon"`
+			Lat float64 `json:"lat"`
+		} `json:"coord"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return Coord{}, nil
+	}
+
+	log.Printf("openWeatherMap: %s: %.2f, %.2f", city, d.Coord.Lon, d.Coord.Lat)
+	return Coord{d.Coord.Lon, d.Coord.Lat}, nil
 }
 
 func (w openWeatherMap) temperature(city string) (float64, error) {
@@ -64,35 +98,31 @@ func (w weatherUnderground) temperature(city string) (float64, error) {
 }
 
 func main() {
-	mw := multiWeatherProvider{
-		openWeatherMap{},
-		weatherUnderground{apiKey: "1df429f462bc7ee1"},
-	}
 
 	http.HandleFunc("/", hello)
-	http.HandleFunc("/weather/", func(w http.ResponseWriter, r *http.Request) {
-		begin := time.Now()
-		city := strings.SplitN(r.URL.Path, "/", 3)[2]
-
-		temp, err := mw.temperature(city)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"city": city,
-			"temp": temp,
-			"took": time.Since(begin).String(),
-		})
-	})
+	http.HandleFunc("/coordinates/", coordinates)
+	http.HandleFunc("/weather/", weather)
 
 	http.ListenAndServe(":8080", nil)
 }
 
 func hello(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("hello!"))
+}
+
+func coordinates(w http.ResponseWriter, r *http.Request) {
+	city := strings.SplitN(r.URL.Path, "/", 3)[2]
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	lat, err := openWeatherMap{}.coordinates(city)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"city": city,
+		"temp": lat,
+	})
 }
 
 func (w multiWeatherProvider) temperature(city string) (float64, error) {
@@ -123,4 +153,28 @@ func (w multiWeatherProvider) temperature(city string) (float64, error) {
 	}
 
 	return sum / float64(len(w)), nil
+}
+
+func weather(w http.ResponseWriter, r *http.Request) {
+	mw := multiWeatherProvider{
+		openWeatherMap{},
+		weatherUnderground{apiKey: "1df429f462bc7ee1"},
+		forecastIo{apiKey: "12e03ff21975540f37c2b8cc79e3093b"},
+	}
+
+	begin := time.Now()
+	city := strings.SplitN(r.URL.Path, "/", 3)[2]
+
+	temp, err := mw.temperature(city)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"city": city,
+		"temp": temp,
+		"took": time.Since(begin).String(),
+	})
 }
